@@ -1,0 +1,15 @@
+# C#
+bin/
+obj/
+
+# C++ / Visual Studio
+.vs/
+x64/
+Debug/
+Release/
+vcpkg_installed/
+*.user
+
+# 영상·빌드 결과물은 저장소 말고 릴리스에
+*.mp4
+*.zip

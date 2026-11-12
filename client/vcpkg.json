@@ -1,0 +1,10 @@
+{
+  "name": "highping-client",
+  "version": "0.1.0",
+  "dependencies": [
+    "sfml",
+    "glad",
+    "glm",
+    "boost-asio"
+  ]
+}

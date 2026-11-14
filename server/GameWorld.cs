@@ -137,6 +137,15 @@ class GameWorld
         }
     }
 
+    // 지금은 받은 조준점을 찍기만 한다. 판정은 빈칸 ④
+    public void OnShoot(Session session, float aimX, float aimZ)
+    {
+        if (_players.TryGetValue(session.Id, out Player? player))
+        {
+            Console.WriteLine($"[사격] player {session.Id} ({player.X:F2}, {player.Z:F2}) -> ({aimX:F2}, {aimZ:F2})");
+        }
+    }
+
     // ------------------------------ 틱 안에서 하는 일 ------------------------------
     private static void Move(Player player, float dt)
     {

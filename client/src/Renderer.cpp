@@ -2,6 +2,7 @@
 #include <cmath>
 #include <iostream>
 #include <glm/gtc/type_ptr.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 namespace
 {
@@ -199,6 +200,15 @@ void Renderer::drawPlayer(float x, float z, const glm::vec4& color)
 	drawMesh(_cylinder, glm::vec3(x, 0, z), color);
 }
 
+// 반투명한 것(조준점, 유령)용: 불투명한 것을 다 그린 뒤에 부른다
+// 깊이 버퍼에 기록하지 않아서, 뒤에 있는 것이 이것 때문에 지워지지 않고 비쳐 보인다
+void Renderer::drawGhost(float x, float z, const glm::vec4& color)
+{
+	glDepthMask(GL_FALSE);
+	drawMesh(_cylinder, glm::vec3(x, 0, z), color);
+	glDepthMask(GL_TRUE);
+}
+
 // 3D 그리기 끝: SFML 이 글자를 그릴 수 있게 우리가 묶어 둔 것들을 풀어 준다
 void Renderer::endFrame()
 {
@@ -209,24 +219,46 @@ void Renderer::endFrame()
 
 // 카메라 행렬: 게임 좌표 (x, y, z) 를 화면 좌표(가로 -1~1, 세로 -1~1)로 바꾸는 4x4 행렬
 //
-// [지금 = 임시] 위에서 똑바로 내려다보는 지도 보기
-//   화면 가로 = x / (보이는 반폭)        게임의 x 가 그대로 화면 가로
-//   화면 세로 = -z / (보이는 반높이)     게임의 z 가 화면 세로 (z 가 작을수록 화면 위)
-//   깊이     = -y / 10                  높이 있는 것이 앞 (원기둥 윗면이 바닥을 가림)
-//
-// [★ 11/14 본인 빈칸] 이 함수를 쿼터뷰(비스듬히 내려다보는 원근 카메라)로 바꾼다
+// 쿼터뷰: lookAt(어디서 어디를 보나) + perspective(멀수록 작게). 값은 본인이 바꿔 보며 정함 (11/14)
 glm::mat4 Renderer::makeViewProj(float aspect) const
 {
-	const float viewHalfHeight = 17.0f;                 // 맵 반높이 15 + 여백 2
-	const float viewHalfWidth = viewHalfHeight * aspect;
+	glm::vec3 eye(0 , 15 , 35 );
+	glm::vec3 target(0.0f, 0.0f, 0.0f);
+	glm::vec3 up(0.0f, 1.0f, 0.0f);
+	glm::mat4 view = glm::lookAt(eye, target, up);
+	glm::mat4 proj = glm::perspective(glm::radians(50.0f ), aspect, 0.1f, 200.0f);
+	return proj * view;
+}
 
-	// glm 은 m[열][행] 순서: m[2][1] = "입력의 z(2번)가 출력의 세로(1번)에 주는 값"
-	glm::mat4 m(0.0f);
-	m[0][0] = 1.0f / viewHalfWidth;
-	m[2][1] = -1.0f / viewHalfHeight;
-	m[1][2] = -1.0f / 10.0f;
-	m[3][3] = 1.0f;
-	return m;
+// 마우스(화면 픽셀)가 가리키는 바닥 좌표 (x, z) 를 구한다
+// 생각: 카메라에서 마우스 방향으로 직선을 쏴서, 그 직선이 바닥(y = 0)과 만나는 점
+// 만나는 점이 없으면(마우스가 지평선 위를 가리킴) false 를 돌려주고 out 은 그대로 둔다
+bool Renderer::screenToFloor(float mouseX, float mouseY, int width, int height, glm::vec2& out) const
+{
+	// 1) 픽셀 -> 화면 좌표(-1 ~ 1). 픽셀은 위가 0 이고 화면 좌표는 위가 +1 이라 세로는 뒤집는다
+	float nx = 2.0f * mouseX / static_cast<float>(width) - 1.0f;
+	float ny = 1.0f - 2.0f * mouseY / static_cast<float>(height);
+
+	// 2) 카메라 행렬을 거꾸로 적용: 화면의 그 점을 지나는 직선 위의 두 점 (카메라에 가까운 점, 먼 점)
+	glm::mat4 inverse = glm::inverse(_viewProj);
+	glm::vec4 nearPoint = inverse * glm::vec4(nx, ny, -1.0f, 1.0f);
+	glm::vec4 farPoint = inverse * glm::vec4(nx, ny, 1.0f, 1.0f);
+	nearPoint /= nearPoint.w;
+	farPoint /= farPoint.w;
+
+	// 3) [★ 본인 빈칸] 직선 위의 점 = nearPoint + (farPoint - nearPoint) * t   (t = 0 이면 nearPoint, 1 이면 farPoint)
+	//    이 점의 높이(y)가 0 이 되는 t 를 구한다. 쓸 값: nearPoint.y, farPoint.y
+	// 직선이 아래로 내려가지 않으면 바닥과 안 만난다 (그대로 계산하면 t 가 음수가 되어 카메라 뒤쪽 점이 나옴)
+	if (farPoint.y - nearPoint.y > -0.0001f)
+	{
+		return false;
+	}
+	float t = -nearPoint.y / (farPoint.y - nearPoint.y);
+
+	// 4) 그 t 를 넣으면 바닥과 만나는 점
+	glm::vec4 hit = nearPoint + (farPoint - nearPoint) * t;
+	out = glm::vec2(hit.x, hit.z);
+	return true;
 }
 
 // 정점 배열을 GPU 에 올리고, "한 정점은 float 6개(위치 3 + 법선 3)" 라고 알려 준다

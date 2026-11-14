@@ -110,6 +110,7 @@ int main()
 	std::vector<PlayerState> players;
 	std::vector<PacketBuffer> packets;
 	uint8_t lastKeyBits = 0;
+	glm::vec2 aim(0.0f, 0.0f);   // 마우스가 가리키는 바닥 좌표 (x, z)
 
 	// ---------------------------------- 반복: 입력 -> 받기 -> 그리기 ----------------------------------
 	// 창은 여기서 닫지 않는다: 닫으면 OpenGL 도 같이 사라져서, 남은 그리기와 Renderer 정리가 갈 곳이 없어짐
@@ -122,6 +123,19 @@ int main()
 			if (event->is<sf::Event::Closed>())
 			{
 				running = false;
+			}
+			else if (const sf::Event::MouseButtonPressed* pressed = event->getIf<sf::Event::MouseButtonPressed>())
+			{
+				// 왼쪽 클릭: 클릭한 그 자리의 바닥 좌표로 사격을 보낸다 (바닥을 안 가리키면 안 보냄)
+				sf::Vector2u windowSize = window.getSize();
+				bool onFloor = renderer.screenToFloor(static_cast<float>(pressed->position.x), static_cast<float>(pressed->position.y), static_cast<int>(windowSize.x), static_cast<int>(windowSize.y), aim);
+				if (pressed->button == sf::Mouse::Button::Left && onFloor)
+				{
+					PacketBuffer shoot(PacketId::Shoot);
+					shoot.writeF32(aim.x);
+					shoot.writeF32(aim.y);
+					net.send(shoot);
+				}
 			}
 			else if (const sf::Event::Resized* resized = event->getIf<sf::Event::Resized>())
 			{
@@ -171,6 +185,13 @@ int main()
 			{
 				renderer.drawPlayer(p.x, p.z, glm::vec4(0.90f, 0.35f, 0.30f, 1.0f));   // 상대: 빨강
 			}
+		}
+
+		// 조준점: 마우스가 가리키는 바닥 자리에 반투명 노란 원기둥. 반투명은 불투명(플레이어) 뒤에 그린다
+		sf::Vector2i mouse = sf::Mouse::getPosition(window);
+		if (renderer.screenToFloor(static_cast<float>(mouse.x), static_cast<float>(mouse.y), static_cast<int>(size.x), static_cast<int>(size.y), aim))
+		{
+			renderer.drawGhost(aim.x, aim.y, glm::vec4(0.95f, 0.85f, 0.25f, 0.5f));
 		}
 		renderer.endFrame();
 

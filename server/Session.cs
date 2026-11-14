@@ -77,6 +77,15 @@ class Session
                 byte keyBits = packet.ReadU8();
                 _world.Post(() => _world.OnInput(this, keyBits));
                 break;
+            case PacketId.Shoot:
+                float aimX = packet.ReadF32();
+                float aimZ = packet.ReadF32();
+                if (!float.IsFinite(aimX) || !float.IsFinite(aimZ))
+                {
+                    break;   // 숫자가 아닌 값(NaN, 무한대)은 버림: 판정 계산에 들어가면 결과가 전부 망가짐
+                }
+                _world.Post(() => _world.OnShoot(this, aimX, aimZ));
+                break;
             default:
                 Console.WriteLine($"[무시] player {Id} : {id}");
                 break;

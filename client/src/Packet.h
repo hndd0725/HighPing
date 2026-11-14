@@ -12,7 +12,7 @@ enum class PacketId : uint16_t
     Welcome = 1,    // S2C: 접속 시 내 번호 (u32 myId)
     Input = 2,      // C2S: 키 상태, 바뀔 때만 (u8 keyBits: W=1, A=2, S=4, D=8)
     Shoot = 3,      // C2S: 사격 (f32 aimX, f32 aimZ)
-    State = 4,      // S2C: 전원 상태 (u32 serverMs, u16 count, [u32 id, f32 x, f32 z, u16 pingMs, u8 hp]...)
+    State = 4,      // S2C: 전원 상태 (u32 serverMs, f32 myX, f32 myZ (내 실제 위치), u16 count, [u32 id, f32 ghostX, f32 ghostZ, u16 pingMs, u8 hp]...)
     Shot = 5,       // S2C: 사격 결과 (u32 shooterId, f32 fromX, f32 fromZ, f32 toX, f32 toZ, u8 hit)
     RoundEnd = 6,   // S2C: 라운드 끝 (u32 winnerId)
 };

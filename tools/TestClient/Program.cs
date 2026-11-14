@@ -45,6 +45,8 @@ Task receiveTask = Task.Run(async () =>
                 continue;
             }
             uint serverMs = packet.ReadU32();
+            float myX = packet.ReadF32();
+            float myZ = packet.ReadF32();
             ushort count = packet.ReadU16();
             stateCount++;
             for (int i = 0; i < count; ++i)
@@ -56,7 +58,8 @@ Task receiveTask = Task.Run(async () =>
                 byte hp = packet.ReadU8();
                 if (id == myId && stateCount % 15 == 0)
                 {
-                    Console.WriteLine($"[{key}] State#{stateCount} serverMs={serverMs} 인원={count} 나=({x:F2}, {z:F2}) ping={ping} hp={hp}");
+                    double gap = Math.Sqrt((myX - x) * (myX - x) + (myZ - z) * (myZ - z));
+                    Console.WriteLine($"[{key}] State#{stateCount} serverMs={serverMs} 인원={count} 실제=({myX:F2}, {myZ:F2}) 유령=({x:F2}, {z:F2}) 차이={gap:F2}m ping={ping} hp={hp}");
                 }
             }
         }

@@ -102,6 +102,13 @@ class GameWorld
             Move(player, dt);
         }
 
+        // 핑 지연용: 이번 틱의 위치를 기록
+        double nowMs = _clock.Elapsed.TotalMilliseconds;
+        foreach (Player player in _players.Values)
+        {
+            player.Record(nowMs);
+        }
+
         _tickCount++;
         if (_tickCount % StateEveryTicks == 0)
         {
@@ -178,24 +185,28 @@ class GameWorld
         player.Z = Math.Clamp(player.Z + dz * Speed * dt, -HalfHeight + Radius, HalfHeight - Radius);
     }
 
-    // 1주차 최소판: 모두에게 같은 State (보는 사람별 핑 지연은 11/12)
+    // 보는 사람마다 State 를 만든다: 맨 앞에 "내 실제 위치", 목록은 전부 유령 위치 (구조 B안)
+    // 유령 위치 = 그 플레이어의 (지금 - 그 플레이어의 핑) 시각 위치. 내 유령도 목록에 들어 있다
     private void BroadcastState()
     {
-        PacketBuffer state = new PacketBuffer(PacketId.State);
-        state.WriteU32((uint)_clock.ElapsedMilliseconds);
-        state.WriteU16((ushort)_players.Count);
-        foreach (Player player in _players.Values)
+        double nowMs = _clock.Elapsed.TotalMilliseconds;
+        foreach (Player viewer in _players.Values)
         {
-            state.WriteU32(player.Id);
-            state.WriteF32(player.X);
-            state.WriteF32(player.Z);
-            state.WriteU16(player.PingMs);
-            state.WriteU8(player.Hp);
-        }
-
-        foreach (Player player in _players.Values)
-        {
-            player.Session.Send(state);
+            PacketBuffer state = new PacketBuffer(PacketId.State);
+            state.WriteU32((uint)nowMs);
+            state.WriteF32(viewer.X);
+            state.WriteF32(viewer.Z);
+            state.WriteU16((ushort)_players.Count);
+            foreach (Player player in _players.Values)
+            {
+                player.FindPast(nowMs - player.PingMs, out float ghostX, out float ghostZ);
+                state.WriteU32(player.Id);
+                state.WriteF32(ghostX);
+                state.WriteF32(ghostZ);
+                state.WriteU16(player.PingMs);
+                state.WriteU8(player.Hp);
+            }
+            viewer.Session.Send(state);
         }
     }
 

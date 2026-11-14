@@ -43,8 +43,9 @@ uint8_t readKeyBits()
 	return bits;
 }
 
-// 받은 패킷 하나를 읽어 myId / players 를 갱신
-void handlePacket(PacketBuffer& packet, uint32_t& myId, std::vector<PlayerState>& players)
+// 받은 패킷 하나를 읽어 myId / myPos / players 를 갱신
+// myPos = 내 실제 위치, players 의 x, z = 유령 위치 (각자의 핑만큼 과거. 내 유령도 들어 있다)
+void handlePacket(PacketBuffer& packet, uint32_t& myId, glm::vec2& myPos, std::vector<PlayerState>& players)
 {
 	PacketId id = packet.readId();
 	if (id == PacketId::Welcome)
@@ -55,6 +56,8 @@ void handlePacket(PacketBuffer& packet, uint32_t& myId, std::vector<PlayerState>
 	else if (id == PacketId::State)
 	{
 		packet.readU32();   // serverMs: 아직 안 씀
+		myPos.x = packet.readF32();
+		myPos.y = packet.readF32();
 		uint16_t count = packet.readU16();
 		players.clear();
 		for (uint16_t i = 0; i < count; i++)
@@ -107,6 +110,7 @@ int main()
 	net.connect("127.0.0.1", 7777);
 
 	uint32_t myId = 0;
+	glm::vec2 myPos(0.0f, 0.0f);   // 내 실제 위치 (x, z)
 	std::vector<PlayerState> players;
 	std::vector<PacketBuffer> packets;
 	uint8_t lastKeyBits = 0;
@@ -162,7 +166,7 @@ int main()
 			// 패킷이 규약보다 짧으면 읽다가 예외가 난다 (서버와 클라의 규약이 어긋났을 때). 그 패킷만 버림
 			try
 			{
-				handlePacket(packet, myId, players);
+				handlePacket(packet, myId, myPos, players);
 			}
 			catch (const std::out_of_range& e)
 			{
@@ -175,15 +179,26 @@ int main()
 		sf::Vector2u size = window.getSize();
 		renderer.beginFrame(static_cast<int>(size.x), static_cast<int>(size.y));
 		renderer.drawFloor();
+
+		// 불투명한 것 먼저: 상대(유령 위치에 보임 = 빨강), 나(실제 위치 = 초록)
+		for (const PlayerState& p : players)
+		{
+			if (p.id != myId)
+			{
+				renderer.drawPlayer(p.x, p.z, glm::vec4(0.90f, 0.35f, 0.30f, 1.0f));
+			}
+		}
+		if (!players.empty())   // 첫 State 를 받기 전에는 내 위치를 모른다 (안 그러면 맵 가운데에 잠깐 그려짐)
+		{
+			renderer.drawPlayer(myPos.x, myPos.y, glm::vec4(0.30f, 0.85f, 0.45f, 1.0f));
+		}
+
+		// 반투명한 것은 그 뒤에: "상대가 보는 나" (내 유령 = 반투명 초록)
 		for (const PlayerState& p : players)
 		{
 			if (p.id == myId)
 			{
-				renderer.drawPlayer(p.x, p.z, glm::vec4(0.30f, 0.85f, 0.45f, 1.0f));   // 나: 초록
-			}
-			else
-			{
-				renderer.drawPlayer(p.x, p.z, glm::vec4(0.90f, 0.35f, 0.30f, 1.0f));   // 상대: 빨강
+				renderer.drawGhost(p.x, p.z, glm::vec4(0.30f, 0.85f, 0.45f, 0.35f));
 			}
 		}
 

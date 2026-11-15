@@ -35,7 +35,7 @@ public:
     void drawPlayer(float x, float z, const glm::vec4& color);
     void drawGhost(float x, float z, const glm::vec4& color);
     void endFrame();
-    bool screenToFloor(float mouseX, float mouseY, int width, int height, glm::vec2& out) const;
+    bool screenToPlane(float mouseX, float mouseY, int width, int height, float planeY, glm::vec2& out) const;
 
 private:
     glm::mat4 makeViewProj(float aspect) const;

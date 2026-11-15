@@ -56,6 +56,8 @@ Task receiveTask = Task.Run(async () =>
                 float z = packet.ReadF32();
                 ushort ping = packet.ReadU16();
                 byte hp = packet.ReadU8();
+                packet.ReadU8();   // flags: 이 테스트에서는 안 씀
+                packet.ReadU8();   // kills
                 if (id == myId && stateCount % 15 == 0)
                 {
                     double gap = Math.Sqrt((myX - x) * (myX - x) + (myZ - z) * (myZ - z));

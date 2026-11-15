@@ -230,10 +230,10 @@ glm::mat4 Renderer::makeViewProj(float aspect) const
 	return proj * view;
 }
 
-// 마우스(화면 픽셀)가 가리키는 바닥 좌표 (x, z) 를 구한다
-// 생각: 카메라에서 마우스 방향으로 직선을 쏴서, 그 직선이 바닥(y = 0)과 만나는 점
+// 마우스(화면 픽셀)가 가리키는, 높이 planeY 인 수평면 위의 좌표 (x, z) 를 구한다 (planeY = 0 이면 바닥)
+// 생각: 카메라에서 마우스 방향으로 직선을 쏴서, 그 직선이 그 높이와 만나는 점
 // 만나는 점이 없으면(마우스가 지평선 위를 가리킴) false 를 돌려주고 out 은 그대로 둔다
-bool Renderer::screenToFloor(float mouseX, float mouseY, int width, int height, glm::vec2& out) const
+bool Renderer::screenToPlane(float mouseX, float mouseY, int width, int height, float planeY, glm::vec2& out) const
 {
 	// 1) 픽셀 -> 화면 좌표(-1 ~ 1). 픽셀은 위가 0 이고 화면 좌표는 위가 +1 이라 세로는 뒤집는다
 	float nx = 2.0f * mouseX / static_cast<float>(width) - 1.0f;
@@ -247,15 +247,16 @@ bool Renderer::screenToFloor(float mouseX, float mouseY, int width, int height, 
 	farPoint /= farPoint.w;
 
 	// 3) [★ 본인 빈칸] 직선 위의 점 = nearPoint + (farPoint - nearPoint) * t   (t = 0 이면 nearPoint, 1 이면 farPoint)
-	//    이 점의 높이(y)가 0 이 되는 t 를 구한다. 쓸 값: nearPoint.y, farPoint.y
+	//    이 점의 높이(y)가 planeY 가 되는 t 를 구한다. 쓸 값: nearPoint.y, farPoint.y
+	//    (처음엔 바닥만 봐서 -nearPoint.y 였다. 몸통 높이에서도 쓰려고 planeY 를 넣음)
 	// 직선이 아래로 내려가지 않으면 바닥과 안 만난다 (그대로 계산하면 t 가 음수가 되어 카메라 뒤쪽 점이 나옴)
 	if (farPoint.y - nearPoint.y > -0.0001f)
 	{
 		return false;
 	}
-	float t = -nearPoint.y / (farPoint.y - nearPoint.y);
+	float t = (planeY - nearPoint.y) / (farPoint.y - nearPoint.y);
 
-	// 4) 그 t 를 넣으면 바닥과 만나는 점
+	// 4) 그 t 를 넣으면 그 높이와 만나는 점
 	glm::vec4 hit = nearPoint + (farPoint - nearPoint) * t;
 	out = glm::vec2(hit.x, hit.z);
 	return true;

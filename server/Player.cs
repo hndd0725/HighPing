@@ -17,6 +17,10 @@ class Player
     public ushort PingMs;
     public byte Hp;
     public double NextShootMs;   // 이 시각 전에는 다시 못 쏜다 (연사 간격)
+    public byte Kills;           // 이번 판에서 상대를 죽인 횟수
+    public bool Dead;            // 죽어서 다시 태어나기를 기다리는 중
+    public double RespawnAtMs;   // 다시 태어날 시각 (Dead 일 때만 의미 있음)
+    public double InvincibleUntilMs;   // 이 시각 전에는 맞아도 안 다친다 (다시 태어난 직후)
     public List<PosRecord> History { get; }   // 틱마다 쌓는 위치 기록. 앞이 오래된 것, 뒤가 최신
 
     private const double HistoryKeepMs = 3500;   // 핑 최대 3000ms + 여유
@@ -31,7 +35,24 @@ class Player
         PingMs = 200;
         Hp = 3;
         NextShootMs = 0;
+        Kills = 0;
+        Dead = false;
+        RespawnAtMs = 0;
+        InvincibleUntilMs = 0;
         History = new List<PosRecord>();
+    }
+
+    // (다시) 태어난다: 자리를 옮기고 HP·핑을 처음 값으로. invincibleUntilMs 전까지는 무적
+    // 위치 기록을 비운다: 안 비우면 유령이 죽은 자리에서 새 자리까지 미끄러져 가는 것이 핑 시간만큼 보인다
+    public void Spawn(float x, float z, double invincibleUntilMs)
+    {
+        X = x;
+        Z = z;
+        Hp = 3;
+        PingMs = 200;
+        Dead = false;
+        InvincibleUntilMs = invincibleUntilMs;
+        History.Clear();
     }
 
     // 틱마다 부른다: 지금 위치를 기록 끝에 붙이고, 너무 오래된 것은 앞에서 버린다

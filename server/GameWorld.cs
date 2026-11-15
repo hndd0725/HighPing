@@ -15,14 +15,19 @@ class GameWorld
     private const int ReportEveryMs = 5000;      // 틱 횟수 출력 간격
     private const double MaxCatchUpMs = 250;     // 이보다 많이 밀리면 따라잡지 않고 버림 (15틱)
     private const double ShootCooldownMs = 500;  // 연사 간격: 한 번 쏘면 0.5초 동안 못 쏨
-    private const int PingOnHit = 200;           // 맞히면 내 핑 +200
-    private const int PingOnHurt = 100;          // 맞으면 내 핑 -100
+    private const int PingOnHit = 0;             // 맞힌 쪽 핑 변화: 없음
+    private const int PingOnHurt = 200;          // 맞은 쪽 핑 변화: +200 (맞을수록 잡기 어려운 유령이 됨)
     private const int PingMax = 3000;
+    private const double RespawnDelayMs = 3000;  // 죽으면 3초 뒤 다시 태어남
+    private const double InvincibleMs = 2000;    // 다시 태어난 뒤 2초 무적
+    private const int KillsToWin = 3;            // 먼저 3번 죽이면 승리
+    private const int MaxPlayers = 2;
     private const int PingMin = 100;             // 아무리 맞아도 유령은 남게: 100ms x 8m/초 = 0.8m > 반지름 0.5m
 
     private readonly ConcurrentQueue<Action> _jobs;
     private readonly Dictionary<uint, Player> _players;
     private readonly Stopwatch _clock;
+    private readonly Random _random;
     private long _tickCount;
 
     public GameWorld()
@@ -30,6 +35,7 @@ class GameWorld
         _jobs = new ConcurrentQueue<Action>();
         _players = new Dictionary<uint, Player>();
         _clock = new Stopwatch();
+        _random = new Random();
         _tickCount = 0;
     }
 
@@ -101,14 +107,25 @@ class GameWorld
             }
         }
 
+        double nowMs = _clock.Elapsed.TotalMilliseconds;
         float dt = (float)(TickMs / 1000.0);
         foreach (Player player in _players.Values)
         {
+            if (player.Dead)
+            {
+                // 죽은 사람은 못 움직인다. 시간이 되면 맵 안의 무작위 자리에 다시 태어난다
+                if (nowMs >= player.RespawnAtMs)
+                {
+                    RandomSpot(out float x, out float z);
+                    player.Spawn(x, z, nowMs + InvincibleMs);
+                    Console.WriteLine($"[다시 태어남] player {player.Id} ({x:F1}, {z:F1}), {InvincibleMs / 1000}초 무적");
+                }
+                continue;
+            }
             Move(player, dt);
         }
 
         // 핑 지연용: 이번 틱의 위치를 기록
-        double nowMs = _clock.Elapsed.TotalMilliseconds;
         foreach (Player player in _players.Values)
         {
             player.Record(nowMs);
@@ -124,13 +141,20 @@ class GameWorld
     // ------------------------------ Post 로 들어오는 일 ------------------------------
     public void OnJoin(Session session)
     {
-        float startX = (session.Id % 2 == 1) ? -15f : 15f;   // 홀수 번호는 왼쪽, 짝수는 오른쪽
-        _players[session.Id] = new Player(session, startX, 0f);
+        if (_players.Count >= MaxPlayers)
+        {
+            Console.WriteLine($"[입장 거절] player {session.Id} : 이미 {MaxPlayers}명");
+            session.Disconnect();
+            return;
+        }
+
+        RandomSpot(out float startX, out float startZ);
+        _players[session.Id] = new Player(session, startX, startZ);
 
         PacketBuffer welcome = new PacketBuffer(PacketId.Welcome);
         welcome.WriteU32(session.Id);
         session.Send(welcome);
-        Console.WriteLine($"[입장] player {session.Id} ({startX}, 0), 현재 {_players.Count}명");
+        Console.WriteLine($"[입장] player {session.Id} ({startX:F1}, {startZ:F1}), 현재 {_players.Count}명");
     }
 
     public void OnLeave(Session session)
@@ -153,9 +177,9 @@ class GameWorld
     // (상대 화면의 유령이 아니라 실제 위치로 판정한다 = 고핑의 규칙. 랙 보상을 일부러 안 함)
     public void OnShoot(Session session, float aimX, float aimZ)
     {
-        if (!_players.TryGetValue(session.Id, out Player? shooter))
+        if (!_players.TryGetValue(session.Id, out Player? shooter) || shooter.Dead)
         {
-            return;
+            return;   // 죽어 있는 동안은 못 쏜다
         }
 
         // 방향 = 조준점 - 내 위치. 길이를 1 로 만든다 (방향만 남기려고)
@@ -179,24 +203,67 @@ class GameWorld
 
         foreach (Player target in _players.Values)
         {
-            if (target.Id == shooter.Id)
+            if (target.Id == shooter.Id || target.Dead)
             {
-                continue;
+                continue;   // 죽어 있는 상대는 맞지 않는다
             }
             if (RayHitsCircle(shooter.X, shooter.Z, dirX, dirZ, target.X, target.Z, Radius))
             {
-                // 맞힌 사람은 핑이 오르고(더 잡기 어려운 유령), 맞은 사람은 핑이 내리고 HP 가 깎인다
-                shooter.PingMs = (ushort)Math.Min(shooter.PingMs + PingOnHit, PingMax);
-                target.PingMs = (ushort)Math.Max(target.PingMs - PingOnHurt, PingMin);
-                if (target.Hp > 0)
+                if (nowMs < target.InvincibleUntilMs)
                 {
-                    target.Hp--;
+                    Console.WriteLine($"[무적] player {shooter.Id} -> player {target.Id} : 다시 태어난 직후라 안 다침");
+                    return;
                 }
+
+                // 맞은 사람은 핑이 오르고(더 잡기 어려운 유령이 됨) HP 가 깎인다. 맞힌 사람은 변화 없음
+                shooter.PingMs = (ushort)Math.Clamp(shooter.PingMs + PingOnHit, PingMin, PingMax);
+                target.PingMs = (ushort)Math.Clamp(target.PingMs + PingOnHurt, PingMin, PingMax);
+                target.Hp--;
                 Console.WriteLine($"[명중] player {shooter.Id} -> player {target.Id} : 핑 {shooter.PingMs} / {target.PingMs}, 맞은 쪽 HP {target.Hp}");
+
+                if (target.Hp == 0)
+                {
+                    Kill(shooter, target, nowMs);
+                }
                 return;
             }
         }
         Console.WriteLine($"[빗나감] player {shooter.Id}");
+    }
+
+    // 맵 안의 무작위 자리 (벽에 끼지 않게 반지름만큼 안쪽)
+    private void RandomSpot(out float x, out float z)
+    {
+        x = (_random.NextSingle() * 2 - 1) * (HalfWidth - Radius);
+        z = (_random.NextSingle() * 2 - 1) * (HalfHeight - Radius);
+    }
+
+    // 상대의 HP 가 0 이 됨: 죽은 사람은 3초 뒤 다시 태어나고, 죽인 사람은 1킬. 3킬이면 승리
+    private void Kill(Player killer, Player victim, double nowMs)
+    {
+        victim.Dead = true;
+        victim.RespawnAtMs = nowMs + RespawnDelayMs;
+        killer.Kills++;
+        Console.WriteLine($"[사망] player {victim.Id} (죽인 쪽 player {killer.Id}, {killer.Kills}킬)");
+
+        if (killer.Kills >= KillsToWin)
+        {
+            Console.WriteLine($"[승리] player {killer.Id}");
+            PacketBuffer roundEnd = new PacketBuffer(PacketId.RoundEnd);
+            roundEnd.WriteU32(killer.Id);
+            foreach (Player player in _players.Values)
+            {
+                player.Session.Send(roundEnd);
+            }
+
+            // 새 판: 모두 킬 수 0, 무작위 자리에서 다시 (무적 없음)
+            foreach (Player player in _players.Values)
+            {
+                player.Kills = 0;
+                RandomSpot(out float x, out float z);
+                player.Spawn(x, z, 0);
+            }
+        }
     }
 
     // [★ 본인 빈칸 ④] (fromX, fromZ) 에서 (dirX, dirZ) 방향으로 나가는 직선이, 중심 (centerX, centerZ) 반지름 radius 인 원에 닿는가
@@ -282,6 +349,19 @@ class GameWorld
                 state.WriteF32(ghostZ);
                 state.WriteU16(player.PingMs);
                 state.WriteU8(player.Hp);
+
+                // 상태 비트: 1 = 죽어 있음, 2 = 무적
+                byte flags = 0;
+                if (player.Dead)
+                {
+                    flags |= 1;
+                }
+                if (nowMs < player.InvincibleUntilMs)
+                {
+                    flags |= 2;
+                }
+                state.WriteU8(flags);
+                state.WriteU8(player.Kills);
             }
             viewer.Session.Send(state);
         }

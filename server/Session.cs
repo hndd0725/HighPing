@@ -131,6 +131,12 @@ class Session
         }
     }
 
+    // 게임 쪽에서 이 접속을 끊을 때 (인원 초과 등)
+    public void Disconnect()
+    {
+        Close();
+    }
+
     private void Close()
     {
         _closed = true;

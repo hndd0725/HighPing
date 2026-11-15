@@ -215,6 +215,11 @@ int main()
 		if (net.isConnected())
 		{
 			text = L"내 번호 " + std::to_wstring(myId) + L"   플레이어 " + std::to_wstring(players.size()) + L"명";
+			for (const PlayerState& p : players)
+			{
+				text += (p.id == myId) ? L"\n나   " : L"\n상대 ";
+				text += L"핑 " + std::to_wstring(p.pingMs) + L"ms   HP " + std::to_wstring(p.hp);
+			}
 		}
 		else
 		{

@@ -14,6 +14,11 @@ class GameWorld
     private const float Radius = 0.5f;
     private const int ReportEveryMs = 5000;      // 틱 횟수 출력 간격
     private const double MaxCatchUpMs = 250;     // 이보다 많이 밀리면 따라잡지 않고 버림 (15틱)
+    private const double ShootCooldownMs = 500;  // 연사 간격: 한 번 쏘면 0.5초 동안 못 쏨
+    private const int PingOnHit = 200;           // 맞히면 내 핑 +200
+    private const int PingOnHurt = 100;          // 맞으면 내 핑 -100
+    private const int PingMax = 3000;
+    private const int PingMin = 100;             // 아무리 맞아도 유령은 남게: 100ms x 8m/초 = 0.8m > 반지름 0.5m
 
     private readonly ConcurrentQueue<Action> _jobs;
     private readonly Dictionary<uint, Player> _players;
@@ -144,13 +149,85 @@ class GameWorld
         }
     }
 
-    // 지금은 받은 조준점을 찍기만 한다. 판정은 빈칸 ④
+    // 사격: 쏜 사람의 실제 위치에서 조준점 방향으로 맵 끝까지 나가는 직선이, 상대의 "실제 위치"에 닿는지 본다
+    // (상대 화면의 유령이 아니라 실제 위치로 판정한다 = 고핑의 규칙. 랙 보상을 일부러 안 함)
     public void OnShoot(Session session, float aimX, float aimZ)
     {
-        if (_players.TryGetValue(session.Id, out Player? player))
+        if (!_players.TryGetValue(session.Id, out Player? shooter))
         {
-            Console.WriteLine($"[사격] player {session.Id} ({player.X:F2}, {player.Z:F2}) -> ({aimX:F2}, {aimZ:F2})");
+            return;
         }
+
+        // 방향 = 조준점 - 내 위치. 길이를 1 로 만든다 (방향만 남기려고)
+        float dirX = aimX - shooter.X;
+        float dirZ = aimZ - shooter.Z;
+        float length = MathF.Sqrt(dirX * dirX + dirZ * dirZ);
+        if (length < 0.001f)
+        {
+            return;   // 자기 발밑을 찍음: 방향이 없다 (쏜 것으로 치지 않음)
+        }
+        dirX /= length;
+        dirZ /= length;
+
+        // 연사 간격: 아직 못 쏘는 시각이면 이 사격은 버린다 (몰아 보내도 0.5초에 1발만 처리)
+        double nowMs = _clock.Elapsed.TotalMilliseconds;
+        if (nowMs < shooter.NextShootMs)
+        {
+            return;
+        }
+        shooter.NextShootMs = nowMs + ShootCooldownMs;
+
+        foreach (Player target in _players.Values)
+        {
+            if (target.Id == shooter.Id)
+            {
+                continue;
+            }
+            if (RayHitsCircle(shooter.X, shooter.Z, dirX, dirZ, target.X, target.Z, Radius))
+            {
+                // 맞힌 사람은 핑이 오르고(더 잡기 어려운 유령), 맞은 사람은 핑이 내리고 HP 가 깎인다
+                shooter.PingMs = (ushort)Math.Min(shooter.PingMs + PingOnHit, PingMax);
+                target.PingMs = (ushort)Math.Max(target.PingMs - PingOnHurt, PingMin);
+                if (target.Hp > 0)
+                {
+                    target.Hp--;
+                }
+                Console.WriteLine($"[명중] player {shooter.Id} -> player {target.Id} : 핑 {shooter.PingMs} / {target.PingMs}, 맞은 쪽 HP {target.Hp}");
+                return;
+            }
+        }
+        Console.WriteLine($"[빗나감] player {shooter.Id}");
+    }
+
+    // [★ 본인 빈칸 ④] (fromX, fromZ) 에서 (dirX, dirZ) 방향으로 나가는 직선이, 중심 (centerX, centerZ) 반지름 radius 인 원에 닿는가
+    // (dirX, dirZ) 는 길이가 1 인 방향이다
+    private static bool RayHitsCircle(float fromX, float fromZ, float dirX, float dirZ, float centerX, float centerZ, float radius)
+    {
+        // v = 쏜 곳에서 상대 중심까지 가는 화살표
+        float vx = centerX - fromX;
+        float vz = centerZ - fromZ;
+
+        // 쏜 곳이 이미 상대 원 안이면(둘이 겹쳐 있음) 어느 방향으로 쏴도 맞는다
+        // (이 줄이 없으면 겹친 채로 상대 중심 반대쪽을 쏠 때 "뒤쪽"으로 처리되어 빗나감 - 실험으로 확인)
+        if (vx * vx + vz * vz < radius * radius)
+        {
+            return true;
+        }
+
+        // 빈칸 1: 상대가 "쏜 방향으로 얼마나 앞에" 있나
+        float forward = vx * dirX + vz * dirZ;
+
+        // 빈칸 2: 뒤쪽에 있으면 안 맞는다
+        if (forward<0)
+        {
+            return false;
+        }
+
+        // 빈칸 3: 상대가 직선에서 "옆으로 얼마나 떨어져" 있나 (의 제곱)
+        float sideSquared = vx * vx + vz * vz - forward * forward;
+
+        // 빈칸 4: 옆으로 떨어진 거리가 반지름 이하이면 맞음
+        return sideSquared < radius * radius;
     }
 
     // ------------------------------ 틱 안에서 하는 일 ------------------------------

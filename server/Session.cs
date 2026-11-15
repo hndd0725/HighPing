@@ -7,6 +7,7 @@ using System.Threading.Channels;
 class Session
 {
     private const int MaxBody = 4096;
+    private const float MaxAim = 100000f;  // 조준 좌표 상한. 지평선 근처를 찍으면 수만까지는 정상적으로 나옴
     private const int MaxSendQueue = 60;   // State 30Hz 기준 약 2초치. 넘으면 안 읽는 클라로 보고 끊음 (GH 쓰기 큐 상한)
 
     public uint Id { get; }
@@ -80,9 +81,9 @@ class Session
             case PacketId.Shoot:
                 float aimX = packet.ReadF32();
                 float aimZ = packet.ReadF32();
-                if (!float.IsFinite(aimX) || !float.IsFinite(aimZ))
+                if (!float.IsFinite(aimX) || !float.IsFinite(aimZ) || MathF.Abs(aimX) > MaxAim || MathF.Abs(aimZ) > MaxAim)
                 {
-                    break;   // 숫자가 아닌 값(NaN, 무한대)은 버림: 판정 계산에 들어가면 결과가 전부 망가짐
+                    break;   // 숫자가 아닌 값(NaN, 무한대)과 터무니없이 큰 값은 버림: 판정 계산에 들어가면 결과가 망가짐
                 }
                 _world.Post(() => _world.OnShoot(this, aimX, aimZ));
                 break;

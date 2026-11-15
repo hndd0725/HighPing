@@ -16,6 +16,7 @@ class Player
     public byte KeyBits;   // 지금 누르고 있는 키 (W=1, A=2, S=4, D=8)
     public ushort PingMs;
     public byte Hp;
+    public double NextShootMs;   // 이 시각 전에는 다시 못 쏜다 (연사 간격)
     public List<PosRecord> History { get; }   // 틱마다 쌓는 위치 기록. 앞이 오래된 것, 뒤가 최신
 
     private const double HistoryKeepMs = 3500;   // 핑 최대 3000ms + 여유
@@ -29,6 +30,7 @@ class Player
         KeyBits = 0;
         PingMs = 200;
         Hp = 3;
+        NextShootMs = 0;
         History = new List<PosRecord>();
     }
 

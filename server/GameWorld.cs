@@ -22,12 +22,26 @@ class GameWorld
     private const double InvincibleMs = 2000;    // 다시 태어난 뒤 2초 무적
     private const int KillsToWin = 3;            // 먼저 3번 죽이면 승리
     private const int MaxPlayers = 2;
+    private const float JumpHeight = 1.2f;       // 점프 높이: 몸 높이 1.8m 의 3분의 2
+    private const double JumpMs = 700;           // 떠 있는 시간
+    private const double JumpRestMs = 300;       // 착지 후 다시 뛰기까지 쉬는 시간
+    private const byte KeyJump = 16;             // 스페이스
+    private const float MinSpawnGap = 15f;       // 입장·새 판 때 다른 사람과 이만큼은 떨어져 태어남
     private const int PingMin = 100;             // 아무리 맞아도 유령은 남게: 100ms x 8m/초 = 0.8m > 반지름 0.5m
 
     private readonly ConcurrentQueue<Action> _jobs;
     private readonly Dictionary<uint, Player> _players;
     private readonly Stopwatch _clock;
     private readonly Random _random;
+    private readonly List<PendingShot> _pendingShots;   // 아직 안 보낸 Shot 패킷 (상대에게는 핑만큼 늦게 보냄)
+
+    // 나중에 보낼 Shot 한 건
+    private struct PendingShot
+    {
+        public double SendAtMs;
+        public Session To;
+        public PacketBuffer Packet;
+    }
     private long _tickCount;
 
     public GameWorld()
@@ -36,6 +50,7 @@ class GameWorld
         _players = new Dictionary<uint, Player>();
         _clock = new Stopwatch();
         _random = new Random();
+        _pendingShots = new List<PendingShot>();
         _tickCount = 0;
     }
 
@@ -108,6 +123,17 @@ class GameWorld
         }
 
         double nowMs = _clock.Elapsed.TotalMilliseconds;
+
+        // 보낼 시각이 된 Shot 을 보낸다 (뒤에서부터 돌아야 지우면서 돌 수 있다)
+        for (int i = _pendingShots.Count - 1; i >= 0; i--)
+        {
+            if (nowMs >= _pendingShots[i].SendAtMs)
+            {
+                _pendingShots[i].To.Send(_pendingShots[i].Packet);
+                _pendingShots.RemoveAt(i);
+            }
+        }
+
         float dt = (float)(TickMs / 1000.0);
         foreach (Player player in _players.Values)
         {
@@ -123,6 +149,7 @@ class GameWorld
                 continue;
             }
             Move(player, dt);
+            UpdateJump(player, nowMs);
         }
 
         // 핑 지연용: 이번 틱의 위치를 기록
@@ -148,7 +175,7 @@ class GameWorld
             return;
         }
 
-        RandomSpot(out float startX, out float startZ);
+        RandomSpotApart(new List<Player>(_players.Values), out float startX, out float startZ);
         _players[session.Id] = new Player(session, startX, startZ);
 
         PacketBuffer welcome = new PacketBuffer(PacketId.Welcome);
@@ -167,9 +194,21 @@ class GameWorld
 
     public void OnInput(Session session, byte keyBits)
     {
-        if (_players.TryGetValue(session.Id, out Player? player))
+        if (!_players.TryGetValue(session.Id, out Player? player))
         {
-            player.KeyBits = keyBits;
+            return;
+        }
+
+        // 스페이스를 "막 누른 순간"인가: 이번 키 상태엔 있고, 직전 키 상태엔 없었다
+        // (누르고 있는 동안 계속 뛰지 않게. 다시 뛰려면 뗐다가 다시 눌러야 함)
+        bool jumpPressed = (keyBits & KeyJump) != 0 && (player.KeyBits & KeyJump) == 0;
+        player.KeyBits = keyBits;
+
+        double nowMs = _clock.Elapsed.TotalMilliseconds;
+        bool onGround = player.JumpStartMs < 0;
+        if (jumpPressed && !player.Dead && onGround && nowMs >= player.NextJumpMs)
+        {
+            player.JumpStartMs = nowMs;
         }
     }
 
@@ -201,21 +240,36 @@ class GameWorld
         }
         shooter.NextShootMs = nowMs + ShootCooldownMs;
 
+        // Shot 에 넣을 값은 지금 적어 둔다 (아래에서 승리 처리가 되면 자리와 핑이 바뀌므로)
+        float fromX = shooter.X;
+        float fromZ = shooter.Z;
+        double shownDelayMs = VisibleDelayMs(shooter, nowMs);
+        float reach = DistanceToMapEdge(fromX, fromZ, dirX, dirZ);   // 총알이 가는 거리: 안 맞으면 맵 끝까지
+        bool hit = false;
+
         foreach (Player target in _players.Values)
         {
             if (target.Id == shooter.Id || target.Dead)
             {
                 continue;   // 죽어 있는 상대는 맞지 않는다
             }
-            if (RayHitsCircle(shooter.X, shooter.Z, dirX, dirZ, target.X, target.Z, Radius))
+            if (target.JumpStartMs >= 0)
             {
+                continue;   // 점프 중인 상대는 맞지 않는다 (총알이 발밑으로 지나감)
+            }
+            if (RayHitsCircle(fromX, fromZ, dirX, dirZ, target.X, target.Z, Radius))
+            {
+                // 총알은 상대 앞에서 멈춘다 (무적이어도 몸에 막힘)
+                reach = Math.Max((target.X - fromX) * dirX + (target.Z - fromZ) * dirZ, 0f);
+
                 if (nowMs < target.InvincibleUntilMs)
                 {
                     Console.WriteLine($"[무적] player {shooter.Id} -> player {target.Id} : 다시 태어난 직후라 안 다침");
-                    return;
+                    break;
                 }
 
                 // 맞은 사람은 핑이 오르고(더 잡기 어려운 유령이 됨) HP 가 깎인다. 맞힌 사람은 변화 없음
+                hit = true;
                 shooter.PingMs = (ushort)Math.Clamp(shooter.PingMs + PingOnHit, PingMin, PingMax);
                 target.PingMs = (ushort)Math.Clamp(target.PingMs + PingOnHurt, PingMin, PingMax);
                 target.Hp--;
@@ -225,10 +279,71 @@ class GameWorld
                 {
                     Kill(shooter, target, nowMs);
                 }
-                return;
+                break;
             }
         }
-        Console.WriteLine($"[빗나감] player {shooter.Id}");
+        if (!hit)
+        {
+            Console.WriteLine($"[빗나감] player {shooter.Id}");
+        }
+
+        // 총알이 날아간 선을 알린다. 쏜 사람에게는 바로, 다른 사람에게는 "쏜 사람이 보이는 지연"만큼 늦게
+        // (바로 보내면 쏜 사람의 실제 위치가 상대 컴퓨터에 먼저 도착한다. 늦게 보내면 그때 유령이 딱 그 자리에 있다)
+        PacketBuffer shot = new PacketBuffer(PacketId.Shot);
+        shot.WriteU32(shooter.Id);
+        shot.WriteF32(fromX);
+        shot.WriteF32(fromZ);
+        shot.WriteF32(fromX + dirX * reach);
+        shot.WriteF32(fromZ + dirZ * reach);
+        shot.WriteU8((byte)(hit ? 1 : 0));
+        foreach (Player player in _players.Values)
+        {
+            if (player.Id == shooter.Id)
+            {
+                player.Session.Send(shot);
+            }
+            else
+            {
+                PendingShot pending = new PendingShot();
+                pending.SendAtMs = nowMs + shownDelayMs;
+                pending.To = player.Session;
+                pending.Packet = shot;
+                _pendingShots.Add(pending);
+            }
+        }
+    }
+
+    // 이 플레이어가 상대에게 얼마나 과거로 보이나: 보통은 핑만큼, 무적인 동안은 0 (실제 위치가 그대로 보임)
+    private static double VisibleDelayMs(Player player, double nowMs)
+    {
+        if (nowMs < player.InvincibleUntilMs)
+        {
+            return 0;
+        }
+        return player.PingMs;
+    }
+
+    // (x, z) 에서 (dirX, dirZ) 방향으로 가면 맵 가장자리까지 얼마나 남았나
+    private static float DistanceToMapEdge(float x, float z, float dirX, float dirZ)
+    {
+        float distance = float.MaxValue;
+        if (dirX > 0)
+        {
+            distance = Math.Min(distance, (HalfWidth - x) / dirX);
+        }
+        else if (dirX < 0)
+        {
+            distance = Math.Min(distance, (-HalfWidth - x) / dirX);
+        }
+        if (dirZ > 0)
+        {
+            distance = Math.Min(distance, (HalfHeight - z) / dirZ);
+        }
+        else if (dirZ < 0)
+        {
+            distance = Math.Min(distance, (-HalfHeight - z) / dirZ);
+        }
+        return distance;
     }
 
     // 맵 안의 무작위 자리 (벽에 끼지 않게 반지름만큼 안쪽)
@@ -236,6 +351,31 @@ class GameWorld
     {
         x = (_random.NextSingle() * 2 - 1) * (HalfWidth - Radius);
         z = (_random.NextSingle() * 2 - 1) * (HalfHeight - Radius);
+    }
+
+    // 무작위 자리를 고르되, others 의 모든 사람과 MinSpawnGap 이상 떨어진 곳 (30번 안에 못 찾으면 마지막 자리)
+    private void RandomSpotApart(List<Player> others, out float x, out float z)
+    {
+        x = 0;
+        z = 0;
+        for (int attempt = 0; attempt < 30; attempt++)
+        {
+            RandomSpot(out x, out z);
+            bool farEnough = true;
+            foreach (Player other in others)
+            {
+                float dx = other.X - x;
+                float dz = other.Z - z;
+                if (dx * dx + dz * dz < MinSpawnGap * MinSpawnGap)
+                {
+                    farEnough = false;
+                }
+            }
+            if (farEnough)
+            {
+                return;
+            }
+        }
     }
 
     // 상대의 HP 가 0 이 됨: 죽은 사람은 3초 뒤 다시 태어나고, 죽인 사람은 1킬. 3킬이면 승리
@@ -256,12 +396,14 @@ class GameWorld
                 player.Session.Send(roundEnd);
             }
 
-            // 새 판: 모두 킬 수 0, 무작위 자리에서 다시 (무적 없음)
+            // 새 판: 모두 킬 수 0, 서로 떨어진 무작위 자리에서 다시 (무적 없음)
+            List<Player> placed = new List<Player>();
             foreach (Player player in _players.Values)
             {
                 player.Kills = 0;
-                RandomSpot(out float x, out float z);
+                RandomSpotApart(placed, out float x, out float z);
                 player.Spawn(x, z, 0);
+                placed.Add(player);
             }
         }
     }
@@ -298,6 +440,27 @@ class GameWorld
     }
 
     // ------------------------------ 틱 안에서 하는 일 ------------------------------
+    // 점프 중이면 높이를 계산한다. 떠 있는 시간이 다 지나면 착지하고, 쉬는 시간을 적어 둔다
+    // 높이 = 4 x 최고 높이 x t x (1 - t),  t = 뛴 뒤 흐른 비율 (0 ~ 1)
+    //   t = 0 -> 0,   t = 0.25 -> 0.9m,   t = 0.5 -> 1.2m (최고),   t = 0.75 -> 0.9m,   t = 1 -> 0
+    private static void UpdateJump(Player player, double nowMs)
+    {
+        if (player.JumpStartMs < 0)
+        {
+            return;
+        }
+
+        double t = (nowMs - player.JumpStartMs) / JumpMs;
+        if (t >= 1.0)
+        {
+            player.Y = 0;
+            player.JumpStartMs = -1;
+            player.NextJumpMs = nowMs + JumpRestMs;
+            return;
+        }
+        player.Y = (float)(4 * JumpHeight * t * (1 - t));
+    }
+
     private static void Move(Player player, float dt)
     {
         float dx = 0;
@@ -339,13 +502,15 @@ class GameWorld
             PacketBuffer state = new PacketBuffer(PacketId.State);
             state.WriteU32((uint)nowMs);
             state.WriteF32(viewer.X);
+            state.WriteF32(viewer.Y);
             state.WriteF32(viewer.Z);
             state.WriteU16((ushort)_players.Count);
             foreach (Player player in _players.Values)
             {
-                player.FindPast(nowMs - player.PingMs, out float ghostX, out float ghostZ);
+                player.FindPast(nowMs - VisibleDelayMs(player, nowMs), out float ghostX, out float ghostY, out float ghostZ);
                 state.WriteU32(player.Id);
                 state.WriteF32(ghostX);
+                state.WriteF32(ghostY);
                 state.WriteF32(ghostZ);
                 state.WriteU16(player.PingMs);
                 state.WriteU8(player.Hp);

@@ -129,7 +129,7 @@ namespace
 	}
 }
 
-Renderer::Renderer() : _program(0), _uViewProj(-1), _uOffset(-1), _uColor(-1), _floor(), _grid(), _cylinder(), _viewProj(1.0f)
+Renderer::Renderer() : _program(0), _uViewProj(-1), _uOffset(-1), _uColor(-1), _floor(), _grid(), _cylinder(), _line(), _viewProj(1.0f)
 {
 	GLuint vs = compileShader(GL_VERTEX_SHADER, VertexShader);
 	GLuint fs = compileShader(GL_FRAGMENT_SHADER, FragmentShader);
@@ -156,11 +156,12 @@ Renderer::Renderer() : _program(0), _uViewProj(-1), _uOffset(-1), _uColor(-1), _
 	_floor = makeMesh(buildFloor(), GL_TRIANGLES);
 	_grid = makeMesh(buildGrid(), GL_LINES);
 	_cylinder = makeMesh(buildCylinder(), GL_TRIANGLES);
+	_line = makeMesh(std::vector<float>(12, 0.0f), GL_LINES);   // 정점 2개 자리만 잡아 둠 (float 6개 x 2)
 }
 
 Renderer::~Renderer()
 {
-	const Mesh* meshes[] = { &_floor, &_grid, &_cylinder };
+	const Mesh* meshes[] = { &_floor, &_grid, &_cylinder, &_line };
 	for (const Mesh* mesh : meshes)
 	{
 		glDeleteBuffers(1, &mesh->vbo);
@@ -195,18 +196,29 @@ void Renderer::drawFloor()
 	glEnable(GL_DEPTH_TEST);
 }
 
-void Renderer::drawPlayer(float x, float z, const glm::vec4& color)
+void Renderer::drawPlayer(float x, float y, float z, const glm::vec4& color)
 {
-	drawMesh(_cylinder, glm::vec3(x, 0, z), color);
+	drawMesh(_cylinder, glm::vec3(x, y, z), color);
 }
 
 // 반투명한 것(조준점, 유령)용: 불투명한 것을 다 그린 뒤에 부른다
 // 깊이 버퍼에 기록하지 않아서, 뒤에 있는 것이 이것 때문에 지워지지 않고 비쳐 보인다
-void Renderer::drawGhost(float x, float z, const glm::vec4& color)
+void Renderer::drawGhost(float x, float y, float z, const glm::vec4& color)
 {
 	glDepthMask(GL_FALSE);
-	drawMesh(_cylinder, glm::vec3(x, 0, z), color);
+	drawMesh(_cylinder, glm::vec3(x, y, z), color);
 	glDepthMask(GL_TRUE);
+}
+
+// 선 하나를 그린다 (총알용). GPU 에 올려 둔 정점 2개의 좌표를 이번 것으로 덮어쓰고 그린다
+void Renderer::drawLine(const glm::vec3& from, const glm::vec3& to, const glm::vec4& color, float width)
+{
+	const float vertices[12] = { from.x, from.y, from.z, 0, 1, 0, to.x, to.y, to.z, 0, 1, 0 };
+	glBindBuffer(GL_ARRAY_BUFFER, _line.vbo);
+	glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(vertices), vertices);
+	glLineWidth(width);
+	drawMesh(_line, glm::vec3(0, 0, 0), color);
+	glLineWidth(1.0f);
 }
 
 // 3D 그리기 끝: SFML 이 글자를 그릴 수 있게 우리가 묶어 둔 것들을 풀어 준다

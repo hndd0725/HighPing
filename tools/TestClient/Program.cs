@@ -46,6 +46,7 @@ Task receiveTask = Task.Run(async () =>
             }
             uint serverMs = packet.ReadU32();
             float myX = packet.ReadF32();
+            packet.ReadF32();   // myY: 이 테스트에서는 안 씀
             float myZ = packet.ReadF32();
             ushort count = packet.ReadU16();
             stateCount++;
@@ -53,6 +54,7 @@ Task receiveTask = Task.Run(async () =>
             {
                 uint id = packet.ReadU32();
                 float x = packet.ReadF32();
+                packet.ReadF32();   // y
                 float z = packet.ReadF32();
                 ushort ping = packet.ReadU16();
                 byte hp = packet.ReadU8();

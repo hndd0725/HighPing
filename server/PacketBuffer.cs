@@ -8,7 +8,7 @@ enum PacketId : ushort
     Welcome = 1,   // S2C: u32 myId
     Input = 2,     // C2S: u8 keyBits (W=1, A=2, S=4, D=8), 바뀔 때만
     Shoot = 3,     // C2S: f32 aimX, f32 aimZ
-    State = 4,     // S2C: u32 serverMs, f32 myX, f32 myZ (내 실제 위치), u16 count, [u32 id, f32 ghostX, f32 ghostZ, u16 pingMs, u8 hp, u8 flags (1=죽음, 2=무적), u8 kills]...
+    State = 4,     // S2C: u32 serverMs, f32 myX, f32 myY, f32 myZ (내 실제 위치, Y = 점프 높이), u16 count, [u32 id, f32 ghostX, f32 ghostY, f32 ghostZ, u16 pingMs, u8 hp, u8 flags (1=죽음, 2=무적), u8 kills]...
     Shot = 5,      // S2C: u32 shooterId, f32 fromX, fromZ, toX, toZ, u8 hit
     RoundEnd = 6,  // S2C: u32 winnerId
 }

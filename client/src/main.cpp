@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cstdint>
 #include <iostream>
 #include <optional>
@@ -15,6 +16,7 @@ struct PlayerState
 {
 	uint32_t id;
 	float x;
+	float y;   // 점프 높이
 	float z;
 	uint16_t pingMs;
 	uint8_t hp;
@@ -24,6 +26,20 @@ struct PlayerState
 
 const uint8_t FlagDead = 1;
 const uint8_t FlagInvincible = 2;
+
+// 날아가는 총알 하나 (서버가 Shot 으로 알려 준 선)
+struct Tracer
+{
+	glm::vec2 from;   // 쏜 자리 (x, z)
+	glm::vec2 to;     // 멈춘 자리: 상대 몸 앞 또는 맵 끝
+	sf::Clock age;    // 받은 뒤 흐른 시간
+	bool mine;
+};
+
+const float ShootIntervalSec = 0.52f;   // 누르고 있을 때 연사 간격. 서버(0.5초)보다 조금 길게: 딱 맞추면 간발의 차로 서버에서 버려질 수 있음
+const float TracerSpeed = 150.0f;       // 총알이 보이는 속도 (m/초). 판정은 쏜 순간 이미 끝났고, 이건 보여 주기용
+const float TracerLength = 5.0f;        // 총알 선의 길이 (m)
+const float TracerHeight = 1.0f;        // 총알이 날아가는 높이 (m)
 
 // 지금 눌린 키를 서버 규약의 비트로: W=1, A=2, S=4, D=8
 uint8_t readKeyBits()
@@ -45,6 +61,10 @@ uint8_t readKeyBits()
 	{
 		bits |= 8;
 	}
+	if (sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Space))
+	{
+		bits |= 16;   // 점프
+	}
 	return bits;
 }
 
@@ -59,7 +79,7 @@ bool findAim(const Renderer& renderer, float mouseX, float mouseY, int width, in
 	const float playerHeight = 1.8f;
 	const float sliceStep = 0.2f;
 
-	for (float h = playerHeight; h > 0.0f; h -= sliceStep)
+	for (float h = playerHeight + 1.2f; h > 0.0f; h -= sliceStep)   // 1.2 = 점프 최고 높이 (떠 있는 상대의 머리까지)
 	{
 		glm::vec2 point;
 		if (!renderer.screenToPlane(mouseX, mouseY, width, height, h, point))
@@ -71,6 +91,10 @@ bool findAim(const Renderer& renderer, float mouseX, float mouseY, int width, in
 			if (p.id == myId || (p.flags & FlagDead) != 0)
 			{
 				continue;
+			}
+			if (h < p.y || h > p.y + playerHeight)
+			{
+				continue;   // 이 높이는 그 사람 몸(발 p.y ~ 머리 p.y + 1.8)이 아니다
 			}
 			float dx = point.x - p.x;
 			float dz = point.y - p.z;
@@ -87,7 +111,8 @@ bool findAim(const Renderer& renderer, float mouseX, float mouseY, int width, in
 // 받은 패킷 하나를 읽어 myId / myPos / players 를 갱신
 // myPos = 내 실제 위치, players 의 x, z = 유령 위치 (각자의 핑만큼 과거. 내 유령도 들어 있다)
 // RoundEnd 를 받으면 winnerId 를 채우고 winnerClock 을 0 으로 (승리 문구를 몇 초 보여 주려고)
-void handlePacket(PacketBuffer& packet, uint32_t& myId, glm::vec2& myPos, std::vector<PlayerState>& players, uint32_t& winnerId, sf::Clock& winnerClock)
+// Shot 을 받으면 tracers 에 총알 하나를 추가
+void handlePacket(PacketBuffer& packet, uint32_t& myId, glm::vec3& myPos, std::vector<PlayerState>& players, uint32_t& winnerId, sf::Clock& winnerClock, std::vector<Tracer>& tracers)
 {
 	PacketId id = packet.readId();
 	if (id == PacketId::Welcome)
@@ -100,6 +125,7 @@ void handlePacket(PacketBuffer& packet, uint32_t& myId, glm::vec2& myPos, std::v
 		packet.readU32();   // serverMs: 아직 안 씀
 		myPos.x = packet.readF32();
 		myPos.y = packet.readF32();
+		myPos.z = packet.readF32();
 		uint16_t count = packet.readU16();
 		players.clear();
 		for (uint16_t i = 0; i < count; i++)
@@ -107,6 +133,7 @@ void handlePacket(PacketBuffer& packet, uint32_t& myId, glm::vec2& myPos, std::v
 			PlayerState p;
 			p.id = packet.readU32();
 			p.x = packet.readF32();
+			p.y = packet.readF32();
 			p.z = packet.readF32();
 			p.pingMs = packet.readU16();
 			p.hp = packet.readU8();
@@ -120,6 +147,18 @@ void handlePacket(PacketBuffer& packet, uint32_t& myId, glm::vec2& myPos, std::v
 		winnerId = packet.readU32();
 		winnerClock.restart();
 		std::cout << "[승리] player " << winnerId << "\n";
+	}
+	else if (id == PacketId::Shot)
+	{
+		Tracer tracer;
+		uint32_t shooterId = packet.readU32();
+		tracer.from.x = packet.readF32();
+		tracer.from.y = packet.readF32();
+		tracer.to.x = packet.readF32();
+		tracer.to.y = packet.readF32();
+		packet.readU8();   // hit: 아직 안 씀
+		tracer.mine = (shooterId == myId);
+		tracers.push_back(tracer);
 	}
 }
 
@@ -161,13 +200,15 @@ int main()
 	net.connect("127.0.0.1", 7777);
 
 	uint32_t myId = 0;
-	glm::vec2 myPos(0.0f, 0.0f);   // 내 실제 위치 (x, z)
+	glm::vec3 myPos(0.0f, 0.0f, 0.0f);   // 내 실제 위치 (x, 점프 높이, z)
 	std::vector<PlayerState> players;
 	std::vector<PacketBuffer> packets;
 	uint8_t lastKeyBits = 0;
 	glm::vec2 aim(0.0f, 0.0f);   // 마우스가 가리키는 바닥 좌표 (x, z)
 	uint32_t winnerId = 0;       // 마지막으로 이긴 사람 (0 = 아직 없음)
 	sf::Clock winnerClock;       // 승리 문구를 띄운 뒤 흐른 시간
+	std::vector<Tracer> tracers; // 지금 날아가고 있는 총알들
+	sf::Clock shootClock;        // 마지막으로 쏜 뒤 흐른 시간
 
 	// ---------------------------------- 반복: 입력 -> 받기 -> 그리기 ----------------------------------
 	// 창은 여기서 닫지 않는다: 닫으면 OpenGL 도 같이 사라져서, 남은 그리기와 Renderer 정리가 갈 곳이 없어짐
@@ -180,19 +221,6 @@ int main()
 			if (event->is<sf::Event::Closed>())
 			{
 				running = false;
-			}
-			else if (const sf::Event::MouseButtonPressed* pressed = event->getIf<sf::Event::MouseButtonPressed>())
-			{
-				// 왼쪽 클릭: 클릭한 그 자리로 사격을 보낸다 (상대 몸통이면 그 자리, 아니면 바닥. 둘 다 아니면 안 보냄)
-				sf::Vector2u windowSize = window.getSize();
-				bool onFloor = findAim(renderer, static_cast<float>(pressed->position.x), static_cast<float>(pressed->position.y), static_cast<int>(windowSize.x), static_cast<int>(windowSize.y), players, myId, aim);
-				if (pressed->button == sf::Mouse::Button::Left && onFloor)
-				{
-					PacketBuffer shoot(PacketId::Shoot);
-					shoot.writeF32(aim.x);
-					shoot.writeF32(aim.y);
-					net.send(shoot);
-				}
 			}
 			else if (const sf::Event::Resized* resized = event->getIf<sf::Event::Resized>())
 			{
@@ -212,6 +240,23 @@ int main()
 			lastKeyBits = keyBits;
 		}
 
+		// 사격: 왼쪽 버튼을 누르고 있는 동안 ShootIntervalSec 마다 보낸다 (한 번 클릭해도 한 발은 나감)
+		// 마우스가 가리키는 곳이 상대 몸통이면 그 자리, 아니면 바닥. 둘 다 아니면(하늘) 안 보냄
+		sf::Vector2i shootMouse = sf::Mouse::getPosition(window);
+		sf::Vector2u shootSize = window.getSize();
+		bool mouseInWindow = shootMouse.x >= 0 && shootMouse.y >= 0 && shootMouse.x < static_cast<int>(shootSize.x) && shootMouse.y < static_cast<int>(shootSize.y);
+		if (window.hasFocus() && mouseInWindow && sf::Mouse::isButtonPressed(sf::Mouse::Button::Left) && shootClock.getElapsedTime().asSeconds() >= ShootIntervalSec)
+		{
+			if (findAim(renderer, static_cast<float>(shootMouse.x), static_cast<float>(shootMouse.y), static_cast<int>(shootSize.x), static_cast<int>(shootSize.y), players, myId, aim))
+			{
+				PacketBuffer shoot(PacketId::Shoot);
+				shoot.writeF32(aim.x);
+				shoot.writeF32(aim.y);
+				net.send(shoot);
+				shootClock.restart();
+			}
+		}
+
 		// 받기: 그동안 쌓인 패킷을 전부 처리
 		net.poll(packets);
 		for (PacketBuffer& packet : packets)
@@ -219,7 +264,7 @@ int main()
 			// 패킷이 규약보다 짧으면 읽다가 예외가 난다 (서버와 클라의 규약이 어긋났을 때). 그 패킷만 버림
 			try
 			{
-				handlePacket(packet, myId, myPos, players, winnerId, winnerClock);
+				handlePacket(packet, myId, myPos, players, winnerId, winnerClock, tracers);
 			}
 			catch (const std::out_of_range& e)
 			{
@@ -245,27 +290,57 @@ int main()
 			}
 		}
 
-		// 불투명한 것 먼저: 상대(유령 위치에 보임 = 빨강), 나(실제 위치 = 초록)
-		// 죽어 있는 사람은 안 그린다. 무적인 사람은 밝은 색으로
+		// 보이는 규칙: 불투명 = 실제 위치, 반투명 = 유령(핑만큼 과거)
+		// 불투명한 것 먼저: 무적인 상대(무적인 동안은 실제 위치가 보임 = 빨강), 나(실제 위치 = 초록)
+		// 죽어 있는 사람은 안 그린다
 		for (const PlayerState& p : players)
 		{
-			if (p.id != myId && (p.flags & FlagDead) == 0)
+			if (p.id != myId && (p.flags & FlagDead) == 0 && (p.flags & FlagInvincible) != 0)
 			{
-				bool invincible = (p.flags & FlagInvincible) != 0;
-				renderer.drawPlayer(p.x, p.z, invincible ? glm::vec4(1.00f, 0.80f, 0.78f, 1.0f) : glm::vec4(0.90f, 0.35f, 0.30f, 1.0f));
+				renderer.drawPlayer(p.x, p.y, p.z, glm::vec4(0.90f, 0.35f, 0.30f, 1.0f));
 			}
 		}
 		if (!players.empty() && !iAmDead)   // 첫 State 를 받기 전에는 내 위치를 모른다 (안 그러면 맵 가운데에 잠깐 그려짐)
 		{
-			renderer.drawPlayer(myPos.x, myPos.y, iAmInvincible ? glm::vec4(0.80f, 1.00f, 0.85f, 1.0f) : glm::vec4(0.30f, 0.85f, 0.45f, 1.0f));
+			renderer.drawPlayer(myPos.x, myPos.y, myPos.z, glm::vec4(0.30f, 0.85f, 0.45f, 1.0f));
 		}
 
-		// 반투명한 것은 그 뒤에: "상대가 보는 나" (내 유령 = 반투명 초록)
+		// 총알: 쏜 자리에서 멈춘 자리까지 빠르게 날아가는 짧은 선. 끝까지 가면 지운다
+		for (size_t i = 0; i < tracers.size(); )
+		{
+			const Tracer& tracer = tracers[i];
+			glm::vec2 path = tracer.to - tracer.from;
+			float pathLength = glm::length(path);
+			float head = tracer.age.getElapsedTime().asSeconds() * TracerSpeed;   // 총알 머리가 간 거리
+			float tail = head - TracerLength;                                     // 총알 꼬리가 간 거리
+			if (pathLength < 0.001f || tail > pathLength)
+			{
+				tracers.erase(tracers.begin() + i);
+				continue;
+			}
+			glm::vec2 dir = path / pathLength;
+			glm::vec2 a = tracer.from + dir * std::max(tail, 0.0f);
+			glm::vec2 b = tracer.from + dir * std::min(head, pathLength);
+			glm::vec4 color = tracer.mine ? glm::vec4(1.00f, 0.95f, 0.55f, 1.0f) : glm::vec4(1.00f, 0.55f, 0.35f, 1.0f);
+			renderer.drawLine(glm::vec3(a.x, TracerHeight, a.y), glm::vec3(b.x, TracerHeight, b.y), color, 4.0f);
+			i++;
+		}
+
+		// 반투명한 것은 그 뒤에: 상대의 유령(반투명 빨강), "상대가 보는 나"(내 유령 = 반투명 초록)
+		// 내가 무적이면 상대에게도 실제 위치가 보이므로 내 유령은 따로 안 그린다
 		for (const PlayerState& p : players)
 		{
-			if (p.id == myId && !iAmDead)
+			if ((p.flags & FlagDead) != 0)
 			{
-				renderer.drawGhost(p.x, p.z, glm::vec4(0.30f, 0.85f, 0.45f, 0.35f));
+				continue;
+			}
+			if (p.id != myId && (p.flags & FlagInvincible) == 0)
+			{
+				renderer.drawGhost(p.x, p.y, p.z, glm::vec4(0.90f, 0.35f, 0.30f, 0.55f));
+			}
+			else if (p.id == myId && !iAmInvincible)
+			{
+				renderer.drawGhost(p.x, p.y, p.z, glm::vec4(0.30f, 0.85f, 0.45f, 0.35f));
 			}
 		}
 
@@ -273,7 +348,7 @@ int main()
 		sf::Vector2i mouse = sf::Mouse::getPosition(window);
 		if (findAim(renderer, static_cast<float>(mouse.x), static_cast<float>(mouse.y), static_cast<int>(size.x), static_cast<int>(size.y), players, myId, aim))
 		{
-			renderer.drawGhost(aim.x, aim.y, glm::vec4(0.95f, 0.85f, 0.25f, 0.5f));
+			renderer.drawGhost(aim.x, 0.0f, aim.y, glm::vec4(0.95f, 0.85f, 0.25f, 0.5f));
 		}
 		renderer.endFrame();
 

@@ -3,6 +3,7 @@ struct PosRecord
 {
     public double TimeMs;
     public float X;
+    public float Y;   // 점프 높이 (바닥 = 0)
     public float Z;
 }
 
@@ -13,7 +14,10 @@ class Player
     public Session Session { get; }
     public float X;
     public float Z;
-    public byte KeyBits;   // 지금 누르고 있는 키 (W=1, A=2, S=4, D=8)
+    public byte KeyBits;   // 지금 누르고 있는 키 (W=1, A=2, S=4, D=8, 스페이스=16)
+    public float Y;              // 점프 높이 (바닥 = 0)
+    public double JumpStartMs;   // 점프를 시작한 시각. -1 이면 땅에 있음
+    public double NextJumpMs;    // 이 시각 전에는 다시 못 뛴다 (착지 후 쉬는 시간)
     public ushort PingMs;
     public byte Hp;
     public double NextShootMs;   // 이 시각 전에는 다시 못 쏜다 (연사 간격)
@@ -39,6 +43,9 @@ class Player
         Dead = false;
         RespawnAtMs = 0;
         InvincibleUntilMs = 0;
+        Y = 0;
+        JumpStartMs = -1;
+        NextJumpMs = 0;
         History = new List<PosRecord>();
     }
 
@@ -52,6 +59,8 @@ class Player
         PingMs = 200;
         Dead = false;
         InvincibleUntilMs = invincibleUntilMs;
+        Y = 0;
+        JumpStartMs = -1;
         History.Clear();
     }
 
@@ -61,6 +70,7 @@ class Player
         PosRecord record = new PosRecord();
         record.TimeMs = nowMs;
         record.X = X;
+        record.Y = Y;
         record.Z = Z;
         History.Add(record);
 
@@ -81,7 +91,8 @@ class Player
     //   2) 뒤에서부터 보면서 TimeMs 가 targetMs 이하인 첫 기록 a 를 찾는다. 그 다음 기록이 b
     //   3) a 가 마지막 기록이면(b 가 없으면) -> a 의 위치
     //   4) 비율을 구해 a 와 b 사이를 섞는다
-    public void FindPast(double targetMs, out float x, out float z)
+    // (11/16 점프 추가: 높이 y 도 x, z 와 똑같이 섞는다 -> 상대에게는 점프도 핑만큼 늦게 보임)
+    public void FindPast(double targetMs, out float x, out float y, out float z)
     {
         // 뒤(최신)에서부터 앞으로 가면서, 시각이 targetMs 이하인 첫 줄을 찾는다
         for (int i = History.Count - 1; i >= 0; i--)
@@ -94,6 +105,7 @@ class Player
                 if (i == History.Count - 1)
                 {
                     x = a.X;
+                    y = a.Y;
                     z = a.Z;
                     return;
                 }
@@ -104,6 +116,7 @@ class Player
                 double ratio = (targetMs - a.TimeMs) / (b.TimeMs - a.TimeMs);
 
                 x = (float)(a.X + (b.X - a.X) * ratio);
+                y = (float)(a.Y + (b.Y - a.Y) * ratio);
                 z = (float)(a.Z + (b.Z - a.Z) * ratio);
                 return;
             }
@@ -111,6 +124,7 @@ class Player
 
         // 여기까지 왔다 = targetMs 가 가장 오래된 줄보다도 이전 -> 가장 오래된 줄의 위치
         x = History[0].X;
+        y = History[0].Y;
         z = History[0].Z;
     }
 }

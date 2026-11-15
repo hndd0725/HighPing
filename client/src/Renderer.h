@@ -24,6 +24,7 @@ private:
     Mesh _floor;
     Mesh _grid;
     Mesh _cylinder;
+    Mesh _line;      // 선 하나(정점 2개). 그릴 때마다 양 끝 좌표를 바꿔 쓴다
     glm::mat4 _viewProj;
 
 public:
@@ -32,8 +33,9 @@ public:
 
     void beginFrame(int width, int height);
     void drawFloor();
-    void drawPlayer(float x, float z, const glm::vec4& color);
-    void drawGhost(float x, float z, const glm::vec4& color);
+    void drawPlayer(float x, float y, float z, const glm::vec4& color);
+    void drawGhost(float x, float y, float z, const glm::vec4& color);
+    void drawLine(const glm::vec3& from, const glm::vec3& to, const glm::vec4& color, float width);
     void endFrame();
     bool screenToPlane(float mouseX, float mouseY, int width, int height, float planeY, glm::vec2& out) const;
 

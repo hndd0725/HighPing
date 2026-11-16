@@ -12,6 +12,8 @@ class GameWorld
     private const float HalfWidth = 20f;         // 맵 40 x 30 (가운데가 0, 0)
     private const float HalfHeight = 15f;
     private const float Radius = 0.5f;
+    private const float BodyHeight = 1.8f;       // 몸(원기둥) 높이: 발 ~ 머리
+    private const float GunHeight = 1.0f;        // 총알이 나가는 높이: 발 + 1.0m
     private const int ReportEveryMs = 5000;      // 틱 횟수 출력 간격
     private const double MaxCatchUpMs = 250;     // 이보다 많이 밀리면 따라잡지 않고 버림 (15틱)
     private const double ShootCooldownMs = 500;  // 연사 간격: 한 번 쏘면 0.5초 동안 못 쏨
@@ -22,7 +24,7 @@ class GameWorld
     private const double InvincibleMs = 2000;    // 다시 태어난 뒤 2초 무적
     private const int KillsToWin = 3;            // 먼저 3번 죽이면 승리
     private const int MaxPlayers = 2;
-    private const float JumpHeight = 1.8f;       // 점프 높이: 몸 높이 1.8m 의 3분의 2
+    private const float JumpHeight = 1.8f;       // 점프 높이 (본인이 1.2 -> 1.8 로 바꿈 = 몸 높이만큼)
     private const double JumpMs = 500;           // 떠 있는 시간
     private const double JumpRestMs = 300;       // 착지 후 다시 뛰기까지 쉬는 시간
     private const byte KeyJump = 16;             // 스페이스
@@ -212,24 +214,32 @@ class GameWorld
         }
     }
 
-    // 사격: 쏜 사람의 실제 위치에서 조준점 방향으로 맵 끝까지 나가는 직선이, 상대의 "실제 위치"에 닿는지 본다
+    // 사격: 쏜 사람의 총(실제 위치, 발 + 1.0m)에서 조준점(높이 포함)을 향해 나가는 3D 직선이, 상대의 "실제 위치" 원기둥에 닿는지 본다
     // (상대 화면의 유령이 아니라 실제 위치로 판정한다 = 고핑의 규칙. 랙 보상을 일부러 안 함)
-    public void OnShoot(Session session, float aimX, float aimZ)
+    // 총알은 상대 몸, 바닥, 맵 끝 중 가장 먼저 만나는 곳에서 멈춘다
+    public void OnShoot(Session session, float aimX, float aimY, float aimZ)
     {
         if (!_players.TryGetValue(session.Id, out Player? shooter) || shooter.Dead)
         {
             return;   // 죽어 있는 동안은 못 쏜다
         }
 
-        // 방향 = 조준점 - 내 위치. 길이를 1 로 만든다 (방향만 남기려고)
-        float dirX = aimX - shooter.X;
-        float dirZ = aimZ - shooter.Z;
-        float length = MathF.Sqrt(dirX * dirX + dirZ * dirZ);
-        if (length < 0.001f)
+        // 총구 = 내 실제 위치에서 GunHeight 만큼 위 (점프 중이면 그 높이에서)
+        float fromX = shooter.X;
+        float fromY = shooter.Y + GunHeight;
+        float fromZ = shooter.Z;
+
+        // 방향 = 조준점 - 총구. 길이를 1 로 만든다 (방향만 남기려고)
+        float dirX = aimX - fromX;
+        float dirY = aimY - fromY;
+        float dirZ = aimZ - fromZ;
+        if (dirX * dirX + dirZ * dirZ < 0.000001f)
         {
-            return;   // 자기 발밑을 찍음: 방향이 없다 (쏜 것으로 치지 않음)
+            return;   // 바로 내 위·아래를 찍음: 옆으로 가는 방향이 없다 (쏜 것으로 치지 않음)
         }
+        float length = MathF.Sqrt(dirX * dirX + dirY * dirY + dirZ * dirZ);
         dirX /= length;
+        dirY /= length;
         dirZ /= length;
 
         // 연사 간격: 아직 못 쏘는 시각이면 이 사격은 버린다 (몰아 보내도 0.5초에 1발만 처리)
@@ -240,11 +250,16 @@ class GameWorld
         }
         shooter.NextShootMs = nowMs + ShootCooldownMs;
 
-        // Shot 에 넣을 값은 지금 적어 둔다 (아래에서 승리 처리가 되면 자리와 핑이 바뀌므로)
-        float fromX = shooter.X;
-        float fromZ = shooter.Z;
+        // Shot 에 넣을 값은 위에서 적어 둔 총구 자리를 쓴다 (아래에서 승리 처리가 되면 자리와 핑이 바뀌므로)
         double shownDelayMs = VisibleDelayMs(shooter, nowMs);
-        float reach = DistanceToMapEdge(fromX, fromZ, dirX, dirZ);   // 총알이 가는 거리: 안 맞으면 맵 끝까지
+
+        // 총알이 가는 거리(reach): 맵 끝과 바닥 중 가까운 쪽까지. 상대 몸에 맞으면 아래에서 더 줄어듦
+        float reach = DistanceToMapEdge(fromX, fromZ, dirX, dirZ);
+        if (dirY < 0)
+        {
+            // 아래로 가는 총알은 바닥(높이 0)에서 멈춘다: 높이 = fromY + dirY x 거리 = 0 이 되는 거리
+            reach = Math.Min(reach, -fromY / dirY);
+        }
         bool hit = false;
 
         foreach (Player target in _players.Values)
@@ -253,14 +268,11 @@ class GameWorld
             {
                 continue;   // 죽어 있는 상대는 맞지 않는다
             }
-            if (target.JumpStartMs >= 0)
+            // 점프 중이어도 그 높이의 몸으로 판정한다 (발 = target.Y, 머리 = target.Y + 1.8)
+            if (RayHitsCylinder(fromX, fromY, fromZ, dirX, dirY, dirZ, reach, target.X, target.Y, target.Z, Radius, BodyHeight, out float hitDistance))
             {
-                continue;   // 점프 중인 상대는 맞지 않는다 (총알이 발밑으로 지나감)
-            }
-            if (RayHitsCircle(fromX, fromZ, dirX, dirZ, target.X, target.Z, Radius))
-            {
-                // 총알은 상대 앞에서 멈춘다 (무적이어도 몸에 막힘)
-                reach = Math.Max((target.X - fromX) * dirX + (target.Z - fromZ) * dirZ, 0f);
+                // 총알은 상대 몸에 닿은 곳에서 멈춘다 (무적이어도 몸에 막힘)
+                reach = hitDistance;
 
                 if (nowMs < target.InvincibleUntilMs)
                 {
@@ -292,8 +304,10 @@ class GameWorld
         PacketBuffer shot = new PacketBuffer(PacketId.Shot);
         shot.WriteU32(shooter.Id);
         shot.WriteF32(fromX);
+        shot.WriteF32(fromY);
         shot.WriteF32(fromZ);
         shot.WriteF32(fromX + dirX * reach);
+        shot.WriteF32(fromY + dirY * reach);
         shot.WriteF32(fromZ + dirZ * reach);
         shot.WriteU8((byte)(hit ? 1 : 0));
         foreach (Player player in _players.Values)
@@ -408,35 +422,74 @@ class GameWorld
         }
     }
 
-    // [★ 본인 빈칸 ④] (fromX, fromZ) 에서 (dirX, dirZ) 방향으로 나가는 직선이, 중심 (centerX, centerZ) 반지름 radius 인 원에 닿는가
-    // (dirX, dirZ) 는 길이가 1 인 방향이다
-    private static bool RayHitsCircle(float fromX, float fromZ, float dirX, float dirZ, float centerX, float centerZ, float radius)
+    // 3D 판정: 총구 (fromX, fromY, fromZ) 에서 방향 (dirX, dirY, dirZ) 로 maxDistance 까지 가는 총알이,
+    // 발 (centerX, footY, centerZ) 에 서 있는 원기둥(반지름 radius, 높이 height)에 닿는가. 닿으면 hitDistance = 처음 닿는 거리
+    // (dir 는 길이 1 인 3D 방향. 옆으로 가는 성분은 0 이 아님 - OnShoot 에서 걸러 둠)
+    //
+    // 생각: 총알이 몸 안에 있으려면 두 조건이 "같은 순간에" 맞아야 한다
+    //   ① 위에서 내려다보면 원 안 (= 본인이 짠 2D 판정 RayHitsCircle 의 확장: 원 안에 있는 "구간"을 구함)
+    //   ② 높이가 발 ~ 머리 사이
+    //   두 구간이 겹치면 맞음, 겹치는 구간의 시작이 총알이 처음 몸에 닿는 거리
+    private static bool RayHitsCylinder(float fromX, float fromY, float fromZ, float dirX, float dirY, float dirZ, float maxDistance,
+                                        float centerX, float footY, float centerZ, float radius, float height, out float hitDistance)
     {
-        // v = 쏜 곳에서 상대 중심까지 가는 화살표
+        hitDistance = 0;
+
+        // ---- ① 위에서 본 판정 (2D) ----
+        // flat = 총알이 1m 날아갈 때 옆(바닥 방향)으로 가는 거리. 예: 45도 아래로 쏘면 0.71
+        float flat = MathF.Sqrt(dirX * dirX + dirZ * dirZ);
+        float flatDirX = dirX / flat;   // 위에서 본 방향 (길이 1)
+        float flatDirZ = dirZ / flat;
+
+        // 여기부터 3줄은 본인이 짠 2D 판정과 같다: v = 총구에서 상대 중심까지, forward = 앞으로, sideSquared = 옆으로(의 제곱)
         float vx = centerX - fromX;
         float vz = centerZ - fromZ;
-
-        // 쏜 곳이 이미 상대 원 안이면(둘이 겹쳐 있음) 어느 방향으로 쏴도 맞는다
-        // (이 줄이 없으면 겹친 채로 상대 중심 반대쪽을 쏠 때 "뒤쪽"으로 처리되어 빗나감 - 실험으로 확인)
-        if (vx * vx + vz * vz < radius * radius)
+        float forward = vx * flatDirX + vz * flatDirZ;
+        float sideSquared = vx * vx + vz * vz - forward * forward;
+        if (sideSquared > radius * radius)
         {
-            return true;
+            return false;   // 위에서 봐도 원 옆으로 지나감
         }
 
-        // 빈칸 1: 상대가 "쏜 방향으로 얼마나 앞에" 있나
-        float forward = vx * dirX + vz * dirZ;
+        // 원 안에 있는 구간 (바닥 거리): forward 를 가운데로 앞뒤 halfChord 씩. halfChord 는 피타고라스: 반지름² = 옆² + halfChord²
+        float halfChord = MathF.Sqrt(radius * radius - sideSquared);
+        // 바닥 거리 -> 총알이 날아간 거리: flat 로 나눔 (총알이 1m 가면 바닥으로는 flat 만큼 가므로)
+        float circleEnter = (forward - halfChord) / flat;
+        float circleExit = (forward + halfChord) / flat;
 
-        // 빈칸 2: 뒤쪽에 있으면 안 맞는다
-        if (forward<0)
+        // ---- ② 높이 판정 ----
+        // 총알 높이 = fromY + dirY x 거리. 발(footY) 과 머리(footY + height) 를 지나는 거리를 구함
+        float heightEnter;
+        float heightExit;
+        if (MathF.Abs(dirY) < 0.000001f)
+        {
+            // 완전히 수평: 높이가 안 바뀐다. 총구 높이가 몸 안이면 계속 몸 높이, 아니면 절대 안 맞음
+            if (fromY < footY || fromY > footY + height)
+            {
+                return false;
+            }
+            heightEnter = float.MinValue;
+            heightExit = float.MaxValue;
+        }
+        else
+        {
+            heightEnter = (footY - fromY) / dirY;
+            heightExit = (footY + height - fromY) / dirY;
+            if (heightEnter > heightExit)
+            {
+                (heightEnter, heightExit) = (heightExit, heightEnter);   // 아래로 쏘면 머리를 먼저 지나므로 순서를 바꿈
+            }
+        }
+
+        // ---- ①과 ②가 겹치는 구간. 0(총구) ~ maxDistance(바닥·맵 끝) 안이어야 함 ----
+        float enter = Math.Max(Math.Max(circleEnter, heightEnter), 0f);
+        float exit = Math.Min(Math.Min(circleExit, heightExit), maxDistance);
+        if (enter > exit)
         {
             return false;
         }
-
-        // 빈칸 3: 상대가 직선에서 "옆으로 얼마나 떨어져" 있나 (의 제곱)
-        float sideSquared = vx * vx + vz * vz - forward * forward;
-
-        // 빈칸 4: 옆으로 떨어진 거리가 반지름 이하이면 맞음
-        return sideSquared < radius * radius;
+        hitDistance = enter;
+        return true;
     }
 
     // ------------------------------ 틱 안에서 하는 일 ------------------------------

@@ -80,12 +80,14 @@ class Session
                 break;
             case PacketId.Shoot:
                 float aimX = packet.ReadF32();
+                float aimY = packet.ReadF32();
                 float aimZ = packet.ReadF32();
-                if (!float.IsFinite(aimX) || !float.IsFinite(aimZ) || MathF.Abs(aimX) > MaxAim || MathF.Abs(aimZ) > MaxAim)
+                if (!float.IsFinite(aimX) || !float.IsFinite(aimY) || !float.IsFinite(aimZ)
+                    || MathF.Abs(aimX) > MaxAim || MathF.Abs(aimY) > MaxAim || MathF.Abs(aimZ) > MaxAim)
                 {
                     break;   // 숫자가 아닌 값(NaN, 무한대)과 터무니없이 큰 값은 버림: 판정 계산에 들어가면 결과가 망가짐
                 }
-                _world.Post(() => _world.OnShoot(this, aimX, aimZ));
+                _world.Post(() => _world.OnShoot(this, aimX, aimY, aimZ));
                 break;
             default:
                 Console.WriteLine($"[무시] player {Id} : {id}");

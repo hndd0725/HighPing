@@ -22,7 +22,7 @@ class GameWorld
     private const double InvincibleMs = 2000;    // 다시 태어난 뒤 2초 무적
     private const int KillsToWin = 3;            // 먼저 3번 죽이면 승리
     private const int MaxPlayers = 2;
-    private const float JumpHeight = 1.2f;       // 점프 높이: 몸 높이 1.8m 의 3분의 2
+    private const float JumpHeight = 1.8f;       // 점프 높이: 몸 높이 1.8m 의 3분의 2
     private const double JumpMs = 500;           // 떠 있는 시간
     private const double JumpRestMs = 300;       // 착지 후 다시 뛰기까지 쉬는 시간
     private const byte KeyJump = 16;             // 스페이스

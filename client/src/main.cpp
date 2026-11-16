@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <iostream>
 #include <optional>
@@ -209,6 +210,8 @@ int main()
 	sf::Clock winnerClock;       // 승리 문구를 띄운 뒤 흐른 시간
 	std::vector<Tracer> tracers; // 지금 날아가고 있는 총알들
 	sf::Clock shootClock;        // 마지막으로 쏜 뒤 흐른 시간
+	bool patrol = false;         // 자동 왕복 중인가 (R 로 켜고 끔). 영상 촬영용: 창을 안 보고 있어도 좌우로 계속 걸음
+	sf::Clock patrolClock;       // 자동 왕복을 켠 뒤 흐른 시간
 
 	// ---------------------------------- 반복: 입력 -> 받기 -> 그리기 ----------------------------------
 	// 창은 여기서 닫지 않는다: 닫으면 OpenGL 도 같이 사라져서, 남은 그리기와 Renderer 정리가 갈 곳이 없어짐
@@ -222,6 +225,14 @@ int main()
 			{
 				running = false;
 			}
+			else if (const sf::Event::KeyPressed* key = event->getIf<sf::Event::KeyPressed>())
+			{
+				if (key->code == sf::Keyboard::Key::R)
+				{
+					patrol = !patrol;
+					patrolClock.restart();
+				}
+			}
 			else if (const sf::Event::Resized* resized = event->getIf<sf::Event::Resized>())
 			{
 				// 글자가 창 크기에 맞춰 늘어나지 않게: SFML 이 그리는 영역을 새 크기로
@@ -232,6 +243,13 @@ int main()
 
 		// 입력: 키 상태가 바뀔 때만 보낸다 (창이 선택돼 있을 때만 키를 읽음)
 		uint8_t keyBits = window.hasFocus() ? readKeyBits() : 0;
+		if (patrol)
+		{
+			// 자동 왕복: 1.5초 왼쪽(A = 2), 1.5초 오른쪽(D = 8)을 반복. 창이 선택 안 돼 있어도 동작
+			// fmod(흐른 초, 3) = 3초 주기 안에서 몇 초째인가. 0~1.5 면 왼쪽, 1.5~3 이면 오른쪽
+			float phase = std::fmod(patrolClock.getElapsedTime().asSeconds(), 3.0f);
+			keyBits = (phase < 1.5f) ? 2 : 8;
+		}
 		if (keyBits != lastKeyBits)
 		{
 			PacketBuffer input(PacketId::Input);
@@ -357,6 +375,10 @@ int main()
 		if (net.isConnected())
 		{
 			text = L"내 번호 " + std::to_wstring(myId) + L"   플레이어 " + std::to_wstring(players.size()) + L"명";
+			if (patrol)
+			{
+				text += L"   [자동 왕복 중: R 로 끄기]";
+			}
 			for (const PlayerState& p : players)
 			{
 				text += (p.id == myId) ? L"\n나   " : L"\n상대 ";
